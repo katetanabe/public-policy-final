@@ -1,0 +1,830 @@
+---
+title: "FairBNB - Amsterdam AirBnb Price Predictions"
+author: "Kate Tanabe and Brooke Acosta"
+subtitle: "MUSA 508 Final Project"
+date: "December 16, 2022"
+output: 
+  html_document: 
+    code_folding: hide
+---
+```{r setup, include=FALSE, warning = FALSE, message = FALSE, results= FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen = 100)
+
+library(tidyverse)
+library(tidycensus)
+library(vtable)
+library(plyr)
+library(dplyr)
+library(sf)
+library(spdep)
+library(caret)
+library(ckanr)
+library(FNN)
+library(grid)
+library(ggplot2)
+library(gridExtra)
+library(ggcorrplot) # plot correlation plot
+library(corrr)      # another way to plot correlation plot
+library(kableExtra)
+library(jtools)     # for regression model plots
+library(ggstance) # to support jtools plots
+library(ggpubr)    # plotting R^2 value on ggplot point scatter
+library(broom.mixed) # needed for effects plots
+library(stargazer)
+library(rgeos)
+library(tidyr)
+library(geosphere)
+library(sfheaders)
+
+# functions and data directory"
+
+plotTheme1 <- function(base_size = 12, title_size = 16) {
+  theme(
+    text = element_text( color = "black"),
+    plot.title = element_text(size = title_size, colour = "black"), 
+    plot.subtitle = element_text(face="italic"),
+    plot.caption = element_text(hjust=0),
+    axis.ticks = element_blank(),
+    panel.background = element_blank(),
+   panel.grid.major = element_line("grey60", size = 0.1),
+    panel.grid.minor = element_blank(),
+   panel.border = element_rect(colour = "black", fill=NA, size=1),
+    strip.background = element_rect(fill = "#DFCDCB", color = "NA"),
+    strip.text = element_text(size=12),
+    axis.title = element_text(size=12),
+    axis.text = element_text(size=10),
+    plot.background = element_blank(),
+    legend.background = element_blank(),
+      #axis.line.y.left   = element_line(color = 'black', size =1),
+    legend.title = element_text(colour = "black", face = "italic"),
+    legend.text = element_text(colour = "black", face = "italic"),
+    strip.text.x = element_text(size = 14)
+  )
+}
+  
+  mapTheme1 <- function(base_size = 12, title_size = 16) {
+  theme(
+    text = element_text( color = "black"),
+    plot.title = element_text(size = title_size,colour = "black"),
+    plot.subtitle=element_text(face="italic"),
+    plot.caption=element_text(hjust=0),
+    axis.ticks = element_blank(),
+    panel.background = element_blank(),axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.line.y.left   = element_line(color = 'black', size =1),
+    panel.grid.minor = element_blank(),
+    strip.text.x = element_text(size = 14))
+}
+  
+Rentals = read.csv("listings_details.csv")
+Rentals.sf <- st_as_sf(Rentals, coords = c("longitude", "latitude"), crs = 4326, agr = "constant")
+
+Listings = read.csv("listings.csv")
+Listings.sf <- st_as_sf(Listings, coords = c("longitude", "latitude"), crs = 4326, agr = "constant")
+
+Districts = read.csv("GEBIED_STADSDELEN.csv")
+Neighborhooddata = read.csv("2019_jaarboek_121a_c4deda3dfc.csv")
+
+names(Neighborhooddata) <- c("District", "Total_Population", "PCT_Nonwestern", "PCT_Over65", "Population_15to64", "PopDesntiyPerKM2", "AvgResTenure", "Total", "PCT_FamiliesWithChildren", "PCT_Singles", "PCT_LowIncome", "AvgIncome", "PopProj2025", "HousingStock", "HousingDensityPerKM2", "AvgHousingOcc", "AvgHomeValue", "PCT_OwnerOccupied", "HousingProj2025")
+
+names(Districts)[1] <- "District"
+
+districtdata <- left_join(Neighborhooddata, Districts, by='District')
+  
+source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
+
+Palette6 <- c("#DFCDCB",
+"#FFC9C2",
+"#FF9185",
+"#FF6C5C",
+"#FD4B37")
+
+Palette7 <- c("#DFCDCB",
+"#FF6C5C")
+
+```
+
+# Introduction
+
+The project explores the effect that various independent variables have on the prices of short-term rental properties in Amsterdam. We created a linear regression model in attempt to predict the prices of Airbnbs in the city. We used a hedonic model approach and included variables on the internal characteristics of the rental, exposure to neighborhood amenities and public services, and the underlying spatial process of prices. We will use these price predictions in our forthcoming app, FairBNB. The app addresses the ‘AirBnb Effect,’ a larger trend where short-term rentals drive up housing prices and reduce the already limited housing stock in communities by decreasing the amount of affordable, long-term units available. Overall, our model makes predictions of short-term rental prices in Amsterdam that are accurate and generalizable. The model’s r-squared value was 0.17, so it does struggle to account for much of the variance in the data, but the mean absolute percentage error (MAPE) was 31% and the mean absolute error (MAE) was $44.79. The model also accounts for spatial autocorrelation and can predict using new datapoints in Amsterdam. 
+
+### The Problem
+
+Cities across the world are experiencing the impacts of the AirBnb Effect. Some local governments are attempting to mitigate the effects by limiting short-term rentals to specific areas or limiting the number of days a property can be used as a short-term rental. However, this is a double-sided issue as tourism is one of the top industries in the world and many communities rely on tourism-based incomes. FairBNB aims to help communities and consumers by encouraging tourism while being aware of the impact on locals.
+
+### The FairBNB App
+
+The main aspect of the app is the price prediction. FairBNB allows users to see predicted prices of short-term rentals and assigns a social impact score based on racial, income, owner-occupied, housing tenure, and other variables. Together, the predicted price and social impact score provide a more informed idea of how a consumer might affect the local community by renting a short-term AirBnb in the area. We also imagine that FairBNB will allow users to identify their own personal values, such as anti-gentrification or displacement, climate change, and transit-oriented development. This will allow further refinement of the listing rankings. 
+
+Our app aims to fill this gap by connecting conscious consumers with short-term rentals that have the least negative impact on communities. FairBNB provides users with price predictions for short-term rentals, uses demographic, location, and listing data to provide a social impact score, and allows users to rank rental listings based on social impact scores and price. This markdown presents the methodology and analysis of our model and predictions. View our FairBNB presentation here: ADD LINK
+
+# The Process
+
+Once we identified our research question and use case, we began our data wrangling process. We imported and cleaned the data. At this point we examined some of the spatial processes related to the short-term rental listings and Amsterdam’s demographic and neighborhood variables. We engineered multiple features and conducted various analyses to create variables that fit the needs of our model. This process included performing K Nearest Neighbor (KNN) analyses, calculating spatial lag of prices, and manipulating our existing variables. We then created our linear model using Ordinary Least Squares regression, which was followed by our validation process to determine the model’s accuracy and generalizability. 
+```{r, results= FALSE, warning= FALSE}
+Attractions = read.csv("attractions_top20.csv")
+Restaurants = read.csv("amsterdam-restaurant.csv")
+
+Markets = st_read("https://maps.amsterdam.nl/open_geodata/geojson_lnglat.php?KAARTLAAG=MARKTEN&THEMA=markten")
+Markets <- Markets %>%
+  dplyr::mutate(lon = sf::st_coordinates(.)[,1],
+                lat = sf::st_coordinates(.)[,2])
+
+#Greenroofs = st_read("https://maps.amsterdam.nl/open_geodata/geojson_lnglat.php?KAARTLAAG=GROENE_DAKEN&THEMA=groene_daken")
+
+#Solarpanels = st_read("https://maps.amsterdam.nl/open_geodata/geojson_lnglat.php?KAARTLAAG=ZONNEPANELEN&THEMA=zonnepanelen")
+
+#CultureAreas = st_read("https://maps.amsterdam.nl/open_geodata/geojson_lnglat.php?KAARTLAAG=CULTUURHISTORIE_VERKENNINGEN&THEMA=cultuurhistorie")
+
+Parks = st_read("https://maps.amsterdam.nl/open_geodata/geojson_lnglat.php?KAARTLAAG=PARKPLANTSOENGROEN&THEMA=stadsparken")
+
+TransitStops = st_read("https://maps.amsterdam.nl/open_geodata/geojson_lnglat.php?KAARTLAAG=TRAMMETRO_PUNTEN_2022&THEMA=trammetro")
+TransitStops <- TransitStops %>%
+  dplyr::mutate(lon = sf::st_coordinates(.)[,1],
+                lat = sf::st_coordinates(.)[,2])
+  
+#Walkability = st_read("https://maps.amsterdam.nl/open_geodata/geojson_lnglat.php?KAARTLAAG=WALKABILITY&THEMA=walkability")
+
+#YearBuilt = st_read("https://maps.amsterdam.nl/open_geodata/geojson_lnglat.php?KAARTLAAG=BOUWJAAR&THEMA=bouwjaar")
+#YearBuilt.sf <- st_as_sf(YearBuilt, coords = c("longitude", "latitude"), crs = 4326, agr = "constant")
+
+Amsterdam = st_read("https://maps.amsterdam.nl/open_geodata/geojson_lnglat.php?KAARTLAAG=INDELING_BUURT&THEMA=gebiedsindeling")
+
+TransitStops.sf <- 
+  TransitStops %>% 
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326, agr = "constant") %>%
+  st_transform('EPSG:7415') %>%
+  distinct()
+
+Markets.sf <- 
+  Markets %>% 
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326, agr = "constant") %>%
+  st_transform('EPSG:7415') %>%
+  distinct()
+
+Amsterdam.sf <- 
+  Amsterdam %>%
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 7415, agr = "constant") %>%
+  st_transform('EPSG:7415') %>%
+  distinct()
+
+AmsterdamJoin <- 
+  Amsterdam.sf %>% group_by(Stadsdeel) %>%
+  dplyr::summarize(geometry = sf::st_union(geometry)) %>%
+  ungroup()
+
+Rest.sf <- 
+  Restaurants %>%
+  st_as_sf(coords = c("lng", "lat"), crs = 4326, agr = "constant") %>%
+  st_transform('EPSG:7415') %>%
+  distinct()
+
+Attractions.sf <- 
+  Attractions %>%
+  st_as_sf(coords = c("Lng", "Lat"), crs = 4326, agr = "constant") %>%
+ # st_transform('EPSG:7415') %>%
+  distinct()
+
+#st_cast works!!!!!!!!!
+
+Parks.sf <- Parks %>%
+  st_cast("POINT")
+```
+# The Data
+
+This project uses a dataset of Amsterdam AirBnb short-term rentals. This dataset includes several variables for each of the over 20,000 listings. We cleaned the data so that it only included listings with under 20 bedrooms, 15 bathrooms, and $3000 nightly price. This resulted in 19,997 remaining listings. We used the remaining observations to build our model and used variables from the listings dataset including bed count, bathroom count, property type, room type, superhost designation, and neighborhood. We also utilized multiple datasets from the City of Amsterdam to better account for neighborhood, demographic, and community variables and amenities. These included exposure to transit stops, markets, parks, and cultural areas. Additionally, we created a dataset of the top twenty attractions in Amsterdam as we know proximity to attractions can affect short-term rental prices. Finally, we used a dataset of restaurants and bars in Amsterdam to determine exposure to these kinds of establishments.  In addition to the variables included in our model, we plan to incorporate some of the data described above to determine the social impact scores for our use case. 
+
+### Exploratory Analysis
+
+We conducted exploratory analysis to inform our model and understanding of our data. We first looked at the spatial process of the short-term rental property prices. We can clearly see clustering of rental locations in and around the city center. We also wanted to understand the demographic and social aspects of the different districts. We present various maps of community demographics below.  
+```{r, warning= FALSE}
+
+ggplot() +
+  geom_sf(data = Amsterdam, fill = "#FFDBD6") +
+  geom_point(data = Listings, aes(x = longitude, y = latitude), 
+          show.legend = "point", size = 1) +
+  scale_colour_manual(values = Palette6,
+                  labels= qBr(Listings.sf, "price"),
+                  name="Quintile\nBreaks") +
+  labs(title="Airbnb Short-Term Rental Locations, Amsterdam") +
+  mapTheme1()
+
+```
+
+We can see that short-term rentals are clustered around the center of the city. In the case of short-term rentals, clustering of listings may be due to tourism market in which renters are more likely and more willing to pay to stay in a rental property closer to downtown or specific monuments or attractions. As discussed earlier, this can also be impacted by the Airbnb Effect and actions that some cities have taken to limit short-term rentals to particular areas. 
+
+Either way, short-term rentals in Amsterdam are clustered by the city center. We hypothesized that this spatial process could affect pricing of listings in the same way that houses for sale are impacted by neighboring houses. In our case, we believe that nearby and comparable short-term rental prices are indicative of a listing’s current price. We will account for this by including the spatial lag price for each listing. 
+
+Below, we present additional plots from our exploratory analysis process. 
+
+```{r,  warning= FALSE}
+ggplot() +
+  geom_sf(data = Amsterdam.sf %>%
+            left_join(st_drop_geometry(districtdata), by = "Stadsdeel"),
+          aes(fill = q5(PCT_OwnerOccupied)))+
+  scale_fill_manual(values = Palette6,
+                   labels=c(28,29,30,31,32),
+                    name="Breaks") +
+  mapTheme1() +
+  labs(title="Percent of Owner-Occupied Housing, Amsterdam")
+```
+
+```{r, warning= FALSE}
+  ggplot() +
+  geom_sf(data = Amsterdam.sf %>%
+            left_join(st_drop_geometry(districtdata), by = "Stadsdeel"),
+          aes(fill = q5(AvgResTenure))) +
+  scale_fill_manual(values = Palette6,
+                   labels=c(7,8,9,10,11),
+                    name="Breaks") +
+  mapTheme1() +
+  labs(title="Average Resident Tenure, Amsterdam")
+
+```
+
+```{r,warning= FALSE}
+ggplot() +
+  geom_sf(data = Amsterdam.sf %>%
+            left_join(st_drop_geometry(districtdata), by = "Stadsdeel"),
+          aes(fill = q5(PCT_Nonwestern))) +
+  scale_fill_manual(values = Palette6,
+                   labels=c(10,20,30,40,50),
+                    name="Breaks") +
+  mapTheme1() +
+  labs(title="Percent Non-Western, Amsterdam")
+
+```
+
+```{r, warning= FALSE}
+ggplot() +
+  geom_sf(data = Amsterdam.sf %>%
+            left_join(st_drop_geometry(districtdata), by = "Stadsdeel"),
+          aes(fill = q5(PCT_LowIncome))) +
+  scale_fill_manual(values = Palette6,
+                   labels=c(27,29,30,31,36),
+                    name="Breaks") +
+  mapTheme1() +
+  labs(title="Percent Low-Income, Amsterdam")
+
+```
+
+```{r, message = FALSE}
+ggplot() +
+  geom_sf(data = Amsterdam.sf %>%
+            left_join(st_drop_geometry(districtdata), by = "Stadsdeel"),
+          aes(fill = q5(AvgHomeValue))) +
+  scale_fill_manual(values = Palette6,
+                   labels=c(200,250,350,400,500),
+                    name="Breaks") +
+  mapTheme1() +
+  labs(title="Average Home Value, Amsterdam")
+
+```
+
+```{r, message = FALSE}
+ggplot() +
+  geom_sf(data = Amsterdam.sf %>%
+            left_join(st_drop_geometry(districtdata), by = "Stadsdeel"),
+          aes(fill = q5(HousingProj2025))) +
+  scale_fill_manual(values = Palette6,
+                   labels=c(30, 40000, 50000, 70000, 80000),
+                    name="Breaks") +
+  mapTheme1() +
+  labs(title="Average Resident Tenure, Amsterdam")
+
+```
+
+### Feature Engineering
+
+We also explored the different variables associated with the listings through a correlation matrix and by plotting the rental prices as a function of different variables to see which variables would be more effective in our model.
+
+```{r, warning= FALSE} 
+# Present table of summary statistics with variable descriptions. Sort these variables by their category (internal characteristics, amenities/public services or spatial structure). Check out the `stargazer` package for this. 
+
+
+Listings.sf$type <- Rentals.sf$property_type
+Listings.sf$accomodates <- Rentals.sf$accommodates
+Listings.sf$bath <- Rentals.sf$bathrooms
+Listings.sf$bedrooms <- Rentals.sf$bedrooms
+Listings.sf$bed_count <- Rentals.sf$beds 
+Rentals.sf$bed_count <- Rentals.sf$beds 
+Listings.sf$superhost <- Rentals.sf$host_is_superhost
+Listings.sf$score <- Rentals.sf$review_scores_rating
+Listings.sf$bedtype <- Rentals.sf$bed_type
+Listings.sf$reviews <- Rentals.sf$number_of_reviews
+Listings.sf$hostlistings <- Rentals.sf$host_listings_count
+```
+
+We present our correlation matrix below.
+
+```{r, warning= FALSE, message = FALSE}
+numericVars <-
+  select_if(st_drop_geometry(Rentals.sf), is.numeric) %>% na.omit()
+
+ggcorrplot(
+  round(cor(numericVars), 1),
+  p.mat = cor_pmat(numericVars),
+  colors = c("#FFC9C2", "white", "#FD4B37"),
+  type="lower",
+  insig = "blank") +  
+    labs(title = "Correlation across numeric variables")  
+```
+
+We continued to explore variables that we thought would impact short-term rental prices in Amsterdam. 
+
+```{r, warning= FALSE, message = FALSE}
+coords <- st_coordinates(Listings.sf) 
+
+neighborList <- knn2nb(knearneigh(coords, 5))
+
+spatialWeights <- nb2listw(neighborList, style="W")
+
+Listings.sf$lagPrice <- lag.listw(spatialWeights, Listings.sf$price)
+
+st_drop_geometry(Listings.sf) %>% 
+  #mutate(Age = 2015 - YR_BUILT) %>%
+  dplyr::select(price, bed_count, bath, score, lagPrice) %>%
+ filter(price <= 3000) %>%
+  filter(bed_count <= 20) %>%
+  filter(bath <= 20) %>%
+  gather(Variable, Value, -price) %>% 
+   ggplot(aes(Value, price)) +
+     geom_point(size = 1) + geom_smooth(method = "lm", se=F, colour = "#FD4B37") +
+     facet_wrap(~Variable, ncol = 2, scales = "free") +
+     labs(title = "Price as a function of continuous variables") +
+     plotTheme1()
+```
+
+```{r, warning= FALSE, message = FALSE}
+
+st_drop_geometry(Listings.sf) %>% 
+  dplyr::select(price, type) %>%
+  filter(price <= 3000) %>%
+  gather(Variable, Value, -price) %>% 
+   ggplot(aes(x = reorder(Value, -price), y = price)) +
+     geom_bar(position = "dodge", stat = "summary", fun.y = "mean") +
+     facet_wrap(~Variable, ncol = 1, scales = "free") +
+     labs(title = "Price as a function of categorical variables", y = "price") +
+     plotTheme1() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r, warning= FALSE, message = FALSE}
+
+st_drop_geometry(Listings.sf) %>% 
+  dplyr::select(price, room_type) %>%
+  filter(price <= 3000) %>%
+  gather(Variable, Value, -price) %>% 
+   ggplot(aes(Value, price)) +
+     geom_bar(position = "dodge", stat = "summary", fun.y = "mean") +
+     facet_wrap(~Variable, ncol = 1, scales = "free") +
+     labs(title = "Price as a function of\ncategorical variables", y = "price") +
+     plotTheme1() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r, warning= FALSE, message = FALSE}
+
+st_drop_geometry(Listings.sf) %>% 
+  dplyr::select(price, neighbourhood) %>%
+  filter(price <= 3000) %>%
+  gather(Variable, Value, -price) %>% 
+   ggplot(aes(x = reorder(Value, -price), y = price)) +
+     geom_bar(position = "dodge", stat = "summary", fun.y = "mean") +
+     facet_wrap(~Variable, ncol = 1, scales = "free") +
+     labs(title = "Price as a function of\ncategorical variables", y = "price") +
+     plotTheme1() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r, warning= FALSE, message = FALSE}
+#distance to Red Light District 
+de_wallen <- Attractions.sf$geometry[18]
+
+Listings.sf <- Listings.sf %>%
+  rowwise() %>%
+  mutate(distRedLight = distm(x=unlist(geometry),y=unlist(de_wallen))[[1]])
+
+#distance to Vondelpark
+Vondelpark <- Attractions.sf$geometry[4]
+
+Listings.sf <- Listings.sf %>%
+  rowwise() %>%
+  mutate(distVondelpark = distm(x=unlist(geometry),y=unlist(Vondelpark))[[1]])
+
+#distance to Riksmuseum
+Rijksmuseum <- Attractions.sf$geometry[1]
+
+Listings.sf <- Listings.sf %>%
+  rowwise() %>%
+  mutate(distRijksmuseum = distm(x=unlist(geometry),y=unlist(Rijksmuseum))[[1]])
+
+st_drop_geometry(Listings.sf) %>% 
+  #mutate(Age = 2015 - YR_BUILT) %>%
+  dplyr::select(price, distVondelpark, distRedLight, distRijksmuseum) %>%
+  filter(price <= 3000) %>%
+  gather(Variable, Value, -price) %>% 
+   ggplot(aes(Value, price)) +
+     geom_point(size = .5) + geom_smooth(method = "lm", se=F, colour = "#FD4B37") +
+     facet_wrap(~Variable, ncol = 3, scales = "free") +
+     labs(title = "Price as a function of continuous variables") +
+     plotTheme1()
+```
+
+Another part of our exploratory analysis and feature engineering process was calculating distance and exposure to various neighborhood amenities and city attractions. We conducted KNN analysis to get understand how distance to some of Amsterdam’s major attractions, such as the Red Light District, Vondelpark, and Rijksmuseum, and exposure to neighborhood amenities, like transit stops, markets, restaurants, and parks, can affect price. Ultimately, we didn’t use any KNN analysis results in our model.
+
+```{r, warning= FALSE}
+#distance to Red Light District 
+de_wallen <- Attractions.sf$geometry[18]
+
+Listings.sf <- Listings.sf %>%
+  rowwise() %>%
+  mutate(distRedLight = distm(x=unlist(geometry),y=unlist(de_wallen))[[1]])
+
+#distance to Vondelpark
+Vondelpark <- Attractions.sf$geometry[4]
+
+Listings.sf <- Listings.sf %>%
+  rowwise() %>%
+  mutate(distVondelpark = distm(x=unlist(geometry),y=unlist(Vondelpark))[[1]])
+
+#distance to Riksmuseum
+Rijksmuseum <- Attractions.sf$geometry[1]
+
+Listings.sf <- Listings.sf %>%
+  rowwise() %>%
+  mutate(distRijksmuseum = distm(x=unlist(geometry),y=unlist(Rijksmuseum))[[1]])
+
+```
+
+The last part of feature engineering process was determining the spatial lag price for each listing. We calculated this using the prices of neighboring rental properties. 
+
+```{r, , warning= FALSE}
+coords <- st_coordinates(Listings.sf) 
+
+neighborList <- knn2nb(knearneigh(coords, 5))
+
+spatialWeights <- nb2listw(neighborList, style="W")
+
+Listings.sf$lagPrice <- lag.listw(spatialWeights, Listings.sf$price)
+```
+
+
+# The Model 
+
+We used OLS to model short-term rental prices in Amsterdam. We used OLS because it finds the linear relationship between a dependent variable and predictor variables. As described above, we began building our model by wrangling data and conducting exploratory analysis. We used the knowledge gained from exploratory analysis to identify the variables that would be most effective in our model. We selected variables that have had a strong relationship to our dependent variable of rental price. We wanted to supplement our listings data through feature engineering. We manipulated some of the variables from the listings dataset so that they fit the needs of our model. For example, we calculated the number of beds per bedroom and converted some variables into different classifications or data types. 
+
+At this point, we were able to finalize the variables needed for our model and identify datasets and variables that could be used to produce the social impact scores for the FairBNB app. Ultimately, our model uses the following variables to predict short-term rental prices in Amsterdam: bed count, bathroom count, property type, room type, superhost designation, distance to the Red Light District, distance to Vondelpark, neighborhood, and spatial lag price. We built the regression model using these variables, split the listings dataset into a test and training test, and made predictions and calculated the residuals. Our training set included 70% of the observations, while the remaining 30% were assigned to the test set. 
+
+```{r, warning = FALSE, message = FALSE}
+## split test vs train
+set.seed(825)
+
+inTrain <- createDataPartition(
+             y = paste(Listings.sf$type, Listings.sf$room_type, Listings.sf$bath, Listings.sf$superhost, Listings.sf$bed_count, Listings.sf$neighbourhood, Listings.sf$bedtype), 
+             p = .70, list = FALSE)
+             
+amsterdam.training <- Listings.sf[inTrain,] 
+amsterdam.test <- Listings.sf[-inTrain,] 
+
+train <- st_drop_geometry(amsterdam.training)
+reg1 <- lm(price ~ ., data =  train %>% 
+                                 dplyr::select(price, bed_count, type, room_type, bath, superhost, distRedLight, lagPrice, distVondelpark, neighbourhood))
+
+test <- st_drop_geometry(amsterdam.test)
+test <- test %>%
+  mutate(Regression = "Baseline Regression")
+
+test$price.Predict = predict(reg1, amsterdam.test)
+
+test$price.Error = test$price.Predict - test$price
+
+test$price.AbsError = abs(test$price.Predict - test$price)
+
+test$price.APE = (abs(test$price.Predict - test$price) / test$price.Predict)
+
+```
+
+# The Results
+
+Finally, our team ran our final model and moved onto model estimate and validation. We wanted to optimize the model’s accuracy, which is the difference between predicted and observed prices, and generalizability, the ability of our model to accurately predict using new data. We examined multiple goodness of fit models to understand how useful our model is predicting short-term rental prices in Amsterdam. To do this, we calculated MAE and MAPE to test for accuracy and conducted k-fold cross-validation and a Moran’s I test to evaluate generalizability. 
+
+###  Regression Summary
+```{r, warning = FALSE}
+#summary table for training set
+summary_table <- summary(reg1) 
+
+stargazer(reg1, type="text", style="qje", digits=2, 
+          title = "Linear Regression Summary Results",
+          dep.var.labels = "Short-Term Rental Price",
+          covariate.labels = c("Bed Count", "Property Type", "Rental Type", "Bathroom Count", "Superhost Property", "Distance to Red Light District", "Spatial Lag Price", "Distance to Vondelpark", "Neighborhood"))
+
+```
+
+###  MAE, MAPE, and Moran's I
+
+The model’s MAE was 44.79, the MAPE was 31%, the r-squared was 0.17, and the Moran’s I was -0.01 with a p-value of 0.99. Our MAE and MAPE are relatively low, meaning that our model makes accurate predictions. The Moran’s I result and p-value, plus our spatially dispersed residuals, show that the model accounts for spatial autocorrelation. While some of these values may not be ideal, our team is aware that interpretation of these numbers depends on the datasets and use cases. Our goal was to maximize accuracy and generalizability while minimizing spatial autocorrelation and disparate impacts. We discuss the results in more detail below. 
+
+```{r, warning = FALSE}
+#Polished table of mean absolute error and MAPE
+testsum <- 
+  st_drop_geometry(test) %>%
+  summarize(MAE = mean(price.AbsError, na.rm=TRUE),
+           MAPE = mean(price.APE, na.rm=TRUE)* 100)
+
+
+#testsum %>%
+#  rename("Mean Absolute Error" = MAE) %>%
+#  rename("Mean Absolute Percentage Error" = MAPE)
+  kable(testsum, caption = "Test Set Results", align = "c") %>%
+    kable_styling(full_width = F)
+```
+
+```{r, warning = FALSE, message = FALSE}
+#morans
+coords.test <-  st_coordinates(amsterdam.test) 
+
+neighborList.test <- knn2nb(knearneigh(coords.test, 5))
+
+spatialWeights.test <- nb2listw(neighborList.test, style="W")
+
+amsterdam.test$lagPrice <- lag.listw(spatialWeights.test, amsterdam.test$price)
+
+amsterdam.test$Regression = "Baseline Regression"
+amsterdam.test$price.Predict = predict(reg1, amsterdam.test)
+amsterdam.test$price.Error = amsterdam.test$price.Predict - amsterdam.test$price
+amsterdam.test$price.AbsError = abs(amsterdam.test$price.Predict - amsterdam.test$price)
+amsterdam.test$price.APE = abs(amsterdam.test$price.Predict - amsterdam.test$price) / amsterdam.test$price.Predict
+
+moranTest <- moran.mc(amsterdam.test$price.Error, na.action=na.omit, 
+                      spatialWeights.test, nsim = 999)
+
+ggplot(as.data.frame(moranTest$res[c(1:999)]), aes(moranTest$res[c(1:999)])) +
+  geom_histogram(binwidth = 0.01) +
+  geom_vline(aes(xintercept = moranTest$statistic), colour = "#FD6D5D",size=1) +
+  scale_x_continuous(limits = c(-1, 1)) +
+  labs(title="Observed and permuted Moran's I",
+       subtitle= "Observed Moran's I in red",
+       x="Moran's I",
+       y="Count") +
+  plotTheme()
+```
+
+### Accuracy
+
+The plot below shows the linear models for the predicted and actual sale price of our dataset. The black line represents our model’s prediction and the green line represents a perfect fit. We can see that there is a small amount of error in our model. 
+
+```{r, warning = FALSE, message = FALSE}
+ggplot(data = test, aes(x=price.Predict,y=price))+
+  geom_point(colour = "#FD6D5D", size = 3, alpha =0.75)+
+  geom_abline(intercept = 0, slope = 1, size = 3,color = "#7fcdbb")+
+  geom_smooth(method = lm, se=F,colour = "black",size=2)+
+  labs(title="Prediction as a function of observed price",
+       subtitle="Black line represents model prediction; Green line represents perfect prediction",
+       x="Predicted Price ($)",
+       y="Observed Price ($)") +
+  plotTheme()+
+  theme(plot.title = element_text(size=22),
+        legend.title = element_text(),
+        legend.position="right",
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=12))
+```
+
+# Cross-Validation
+
+We conducted k-fold cross-validation tests to determine the generalizability of the model. We ran a 100-fold cross-validation test, which split the dataset into equally sized subsets and measured for goodness of fit across all folds. The summary of our cross-validation tests, including mean, maximum, minimum, and standard deviation, is presented below. 
+
+```{r, warning = FALSE}
+fitControl <- trainControl(method = "cv", number = 100)
+set.seed(825)
+
+reg.cv <- 
+  train(price ~ ., data = st_drop_geometry(test) %>% 
+                                dplyr::select(price, bed_count, type, room_type, bath, superhost, distRedLight, lagPrice, distVondelpark, neighbourhood), 
+     method = "lm", trControl = fitControl, na.action = na.pass)
+
+#cross val results 
+data.frame(Test = c("Cross_Validation"), 
+           Mean = mean(reg.cv$resample[,3]),
+           Max = max(reg.cv$resample[,3]),
+           Min = min(reg.cv$resample[,3]),
+           Standard_Deviation = sd(reg.cv$resample[,3]))%>%
+  kable() %>%
+  kable_styling() %>%
+  footnote(general_title = "Summary Statistics of Cross Validation, k = 100 folds")
+```
+
+### Generalizability
+
+Generalizability across space is also important for creating rental price prediction models. Looking at the map of our test set residuals, we can see that residuals are generally not clustered besides in the center of the city. However, it’s important to note that a majority of the short-term rentals are located in this area so we would expect to see a clustering of points. In areas on the outskirts of the city center, we can see that residuals are somewhat random and seems like there is little spatial autocorrelation present.   
+
+```{r, warning = FALSE, message = FALSE}
+
+coords.test <-  st_coordinates(amsterdam.test) 
+
+neighborList.test <- knn2nb(knearneigh(coords.test, 5))
+
+spatialWeights.test <- nb2listw(neighborList.test, style="W")
+
+amsterdam.test$lagPrice <- lag.listw(spatialWeights.test, amsterdam.test$price)
+
+amsterdam.test$Regression = "Baseline Regression"
+amsterdam.test$price.Predict = predict(reg1, amsterdam.test)
+amsterdam.test$price.Error = amsterdam.test$price.Predict - amsterdam.test$price
+amsterdam.test$price.AbsError = abs(amsterdam.test$price.Predict - amsterdam.test$price)
+amsterdam.test$price.APE = abs(amsterdam.test$price.Predict - amsterdam.test$price) / amsterdam.test$price.Predict
+
+
+ggplot() +
+    geom_sf(data = Amsterdam.sf, fill = "white") +
+    geom_sf(data = amsterdam.test, aes(colour = q5(price.AbsError)),
+            show.legend = "point", size = 2) +
+    scale_colour_manual(values = Palette6,
+                     labels=qBr(test,"price.AbsError"),
+                     name="Quintile\nBreaks ($)") +
+    labs(title="Test Set Residuals,Amsterdam") +
+    mapTheme1()
+```
+
+Our model is generalizable. The standard deviation of the MAE across all folds was 18.3. This figure shows the goodness of fit metrics across all folds and means there was still a small amount of variation across the folds. The distribution of MAE is clustered tightly between $0-50 but it is also positively skewed by a very small number of higher values. This could be due to our dataset. We provide a plot of the distribution of MAE across all 100 folds below.  
+
+```{r, warning = FALSE, message = FALSE}
+hist(reg.cv$resample[,3],xlab="MAE", col="#FD6D5D", breaks = 50, main = "Distribution of Mean Absolute Error")
+```
+
+We present additional plots that examine the relationship between price and residuals spatially below.
+
+```{r, warning = FALSE, message = FALSE}
+#Charlotte.test1 <- st_drop_geometry(Charlotte.test)
+
+ggplot(amsterdam.test, aes(x=lagPrice, y=price)) +
+  geom_point(colour = "#FD6D5D", size = 3, alpha =0.75) +
+  geom_smooth(method = "lm", se = FALSE, colour = "black") +
+  labs(title = "Price as a function of the spatial lag of price",
+       x = "Spatial lag of price (Mean price of 5 nearest neighbors)",
+       y = "Rental Price") +
+  plotTheme()
+```
+
+```{r, warning = FALSE, message = FALSE}
+amsterdam.test$lagPrice <- lag.listw(spatialWeights.test, amsterdam.test$price)
+
+amsterdam.test$lagPriceError <- lag.listw(spatialWeights.test, amsterdam.test$price.AbsError, NAOK=TRUE)
+
+ggplot(amsterdam.test, aes(x=lagPriceError, y=price)) +
+  geom_point(colour = "#FD6D5D", size = 3, alpha =0.75) +
+  geom_smooth(method = "lm", se = FALSE, colour = "black") +
+  labs(title = "Error as a function of the spatial lag of price",
+       x = "Spatial lag of errors (Mean error of 5 nearest neighbors)",
+       y = "Sale Price") +
+  plotTheme()
+```
+
+### Predicted Prices
+
+Below, we plot the model's predicitons on the test set.
+
+```{r, warning = FALSE, message = FALSE}
+ggplot() +
+  geom_sf(data = Amsterdam.sf, fill = "white") +
+  geom_sf(data = amsterdam.test, aes(colour = q5(price.Predict)), 
+          show.legend = "point", size = 2) +
+  scale_colour_manual(values=Palette6,
+                      labels=qBr(amsterdam.test,"price.Predict"),
+                      name="Quintile\nBreaks ($)") +
+  labs(title="Predicted Short-Term Rental Price, Amsterdam") +
+  mapTheme1() 
+ # theme(plot.title = element_text(size=22))
+```
+
+We also wanted to look at how our model preforms across districts. Our errors were lowest in areas in and around the city center, which makes sense given the number of properties located there. 
+
+```{r, warning = FALSE, message = FALSE}
+library(mapview)
+amsterdam.test = st_as_sf(amsterdam.test)
+amsterdam.test = st_transform(amsterdam.test, crs='EPSG:7415')
+nhoods = st_intersection(AmsterdamJoin, amsterdam.test)
+
+districtdata$PCTWhite = 100 - (districtdata$PCT_Nonwestern)
+districtdata$raceContext = ifelse(districtdata$PCTWhite > 50, "Westerm", "Non-Western")
+districtdata$incomeContext = ifelse(districtdata$PCT_LowIncome < 30, "High Income", "Low Income")
+
+nhoods <- nhoods %>%
+  left_join(districtdata %>% select(Stadsdeel, raceContext, incomeContext), by="Stadsdeel")
+
+nhoods_race <- nhoods %>%
+  group_by(raceContext) %>%
+  dplyr::summarise(meanMAPE = mean(price.APE, na.rm=TRUE)*100, 
+            meanPrice = mean(price))
+
+nhoods_income <- nhoods %>%
+  group_by(incomeContext) %>%
+  dplyr::summarise(meanMAPE = mean(price.APE, na.rm=TRUE)*100, 
+            meanPrice = mean(price))
+nhoods_MAPE <- nhoods %>%
+  group_by(Stadsdeel) %>%
+  dplyr::summarise(meanMAPE = mean(price.APE, na.rm=TRUE)*100, 
+            meanPrice = mean(price))
+
+ggplot() +
+  geom_sf(data = Amsterdam.sf %>%
+            left_join(st_drop_geometry(nhoods_MAPE), by = "Stadsdeel"),
+          aes(fill = q5(meanMAPE))) +
+  #geom_sf(data = Charlotte.test2, colour = "black", size = .25) +
+  scale_fill_manual(values = Palette6,
+                    labels=qBr(nhoods_MAPE,"meanMAPE"),
+                    name="Quintile\nBreaks") +
+  mapTheme1() +
+  labs(title="Absolute rental price percent errors by district")
+```
+
+```{r, warning = FALSE, message = FALSE}
+ggplot(nhoods_MAPE, aes(x=meanPrice, y=meanMAPE))+
+  geom_point(colour = "#FD6D5D", size = 3, alpha =0.75) +
+  geom_smooth(method = "lm", color = "black") +
+  labs(title = "MAPE by neighborhood as a function of price by neighborhood",
+       x = "Rental Price",
+       y = "MAPE") +
+  theme(
+    legend.position = "none") +
+  plotTheme()
+```
+
+### Race and Income Context
+
+Given our app’s use case, we wanted to ensure that our model did not produce any disparate impacts based on race or income. To further test our model’s generalizability, our team applied demographic data to test how well our model generalizes across different race and income contexts. We used the districts race (western and non-western, e.g., immigrants from countries in Africa, Asia, or South America) and income levels to compare MAPEs. 
+
+```{r, warning = FALSE, message = FALSE}
+
+
+grid.arrange(ncol = 2,
+  ggplot() + geom_sf(data = Amsterdam.sf %>%
+                       left_join(st_drop_geometry(districtdata), by = "Stadsdeel"),
+                     aes(fill =(raceContext))) +
+   # geom_sf(data = nhoods, colour = "black", size = .25) +
+    scale_fill_manual(values = Palette7,
+                      # labels=qBr(districtdata,"PCT_Nonwestern"),
+                     name="Race") +
+    labs(title="Race Context", subtitle = "Majority of households identify \nas non-western") +
+    mapTheme1() + theme(legend.position="bottom"),
+  ggplot() + geom_sf(data = Amsterdam.sf %>%
+            left_join(st_drop_geometry(districtdata), by = "Stadsdeel"),
+          aes(fill =(incomeContext))) +
+ # geom_sf(data = nhoods, colour = "black", size = .25) +
+  scale_fill_manual(values = Palette7,
+                   # labels=qBr(districtdata,"PCT_Nonwestern"),
+                    name="Income") +
+  mapTheme1() + labs(title="Income Context", subtitle = "Majority of households fall below \nlow-income threshold") + theme(legend.position="bottom"))
+```
+
+### Income Context
+
+We found that the model generalizes well in the income context where high income communities had a value of 32 and low-income had a value of 31. 
+
+```{r, warning = FALSE, message = FALSE}
+nhoods_income %>% 
+  
+  
+  group_by(incomeContext) %>%
+  dplyr::summarize(meanMAPE) %>%
+  st_drop_geometry() %>%
+ # mutate(Id= row_number()) %>%
+  #ungroup %>%
+  spread(incomeContext, meanMAPE) %>%
+  #select(-Id) %>%
+  kable(caption = "Test set MAPE by district income context")%>%
+  kable_styling(full_width = F)
+```
+
+### Race Context 
+
+Unfortunately, our model did not do as well for the race context. We found that the model was overpredicting for non-western communities, which could lead to more negative impacts. 
+
+```{r, warning = FALSE, message = FALSE}
+nhoods_race %>%
+  group_by(raceContext) %>%
+  dplyr::summarize(meanMAPE) %>%
+  st_drop_geometry() %>%
+  spread(raceContext, meanMAPE) %>%
+  kable(caption = "Test set MAPE by district race context")%>%
+  kable_styling(full_width = F)
+
+
+```
+
+# Discussion
+
+Our analysis aimed to understand how internal characteristics, neighborhood amenities, and spatial processes affect short-term rental prices and uses these variables to build an accurate and generalizable prediction model. However, our main goal of this project was to consider the social impact of short-term rentals in communities and examine the different factors that make communities more susceptible to negative impacts like the Airbnb effect. Ultimately, we hoped to develop a tool that could help consumers, like ourselves, make conscious and informed travel decisions based on their willingness-to-pay and personal values. 
+
+Our analysis meets this use case in two ways. First, we built a model that predicts short-term rental prices. This is a critical data point that consumers use to make decisions and weigh their options in a saturated market. Second, we identified several variables that provide indication of a community’s susceptibility to potential gentrification and displacement as a result of the short-term rental market. We identified datasets that can be used for FairBNB’s social impact score and personal values selector. These include median area income, race, housing values, corridors/slums, solar panels, green roofs, district heating & cooling, trees, urban agriculture, parks, transit stops, transit routes, and walkability. 
+
+# Going Forward
+
+Our model is relatively effective at predicting short-term rental prices in Amsterdam. We found the room type, bed count, distance to the Red-Light District, and lag price variables to be interesting and important variables in making accurate predictions. 
+
+The model’s MAE was 44.79 and the MAPE was 31%. The model only accounted for 17% of the variation in short-term rental prices. We found that our model was more accurate when predicting for more expensive short-term rentals. Our model was less accurate for rentals located in majority non-white neighborhoods. This could be due to the breakdown of listings in our training sets and fewer observations with lower prices. 
+
+However, it is important to note that short-term rental market is highly saturated and still highly competitive. Prices can depend on the time or date the booking was made or time and date of the planned stay. In the future, we would like to incorporate more analysis for temporal processes. We may not recommend this model for cities besides Amsterdam given the city-specific variables, but there is the possibility of adding supplemental spatial features and more diverse data observations. 
+
+
